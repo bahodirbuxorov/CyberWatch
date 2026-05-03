@@ -1,23 +1,4 @@
-version: "3.9"
-
 services:
-  # ──────────────────────────────────────────
-  # Nitter — self-hosted X (Twitter) frontend
-  # ──────────────────────────────────────────
-  nitter:
-    image: zedeus/nitter:latest
-    container_name: cyberwatch-nitter
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    environment:
-      - NITTER_HOST=0.0.0.0
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
   # ──────────────────────────────────────────
   # CyberWatch UZ Bot
   # ──────────────────────────────────────────
@@ -26,12 +7,38 @@ services:
     container_name: cyberwatch-bot
     restart: unless-stopped
     env_file: .env
-    depends_on:
-      nitter:
-        condition: service_healthy
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-    environment:
-      # Nitter self-hosted instance ga prioritet berish
-      - NITTER_SELF_HOSTED_URL=http://nitter:8080
+
+  # ──────────────────────────────────────────
+  # Nitter — self-hosted X (Twitter) frontend
+  # (Ixtiyoriy) Agar self-hosted Nitter kerak bo'lsa,
+  # quyidagi servislarni uncomment qiling va
+  # bot servisiga environment qo'shing:
+  #   environment:
+  #     - NITTER_SELF_HOSTED_URL=http://nitter:8080
+  #   depends_on:
+  #     nitter:
+  #       condition: service_healthy
+  # ──────────────────────────────────────────
+  # nitter:
+  #   image: zedeus/nitter:latest
+  #   container_name: cyberwatch-nitter
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8080:8080"
+  #   depends_on:
+  #     - redis
+  #   volumes:
+  #     - ./nitter.conf:/src/nitter.conf:ro
+  #
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: cyberwatch-redis
+  #   restart: unless-stopped
+  #   volumes:
+  #     - redis_data:/data
+
+# volumes:
+#   redis_data:
