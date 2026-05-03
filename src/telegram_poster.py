@@ -18,16 +18,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_LENGTH = 4096
 
 
-def escape_markdown_v2(text: str) -> str:
-    """
-    MarkdownV2 uchun maxsus belgilarni escape qiladi.
-
-    Telegram MarkdownV2 da quyidagi belgilar escape bo'lishi kerak:
-    _ * [ ] ( ) ~ ` > # + - = | { } . !
-    """
-    escape_chars = r"\_*[]()~`>#+-=|{}.!"
-    return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", text)
-
+import html
 
 def format_post(
     emoji: str,
@@ -37,28 +28,17 @@ def format_post(
     published_at: str,
 ) -> str:
     """
-    Telegram uchun post formatlaydi (MarkdownV2).
-
-    Args:
-        emoji: Manba kanali emojisi.
-        source_name: Manba kanali nomi.
-        translated_text: Tarjima qilingan matn.
-        tweet_url: Asl tweet URL.
-        published_at: Nashr vaqti (string).
-
-    Returns:
-        Formatlangan MarkdownV2 xabar.
+    Telegram uchun post formatlaydi (HTML).
     """
-    safe_name = escape_markdown_v2(source_name)
-    safe_text = escape_markdown_v2(translated_text)
-    safe_time = escape_markdown_v2(published_at)
-    safe_url = tweet_url.replace(")", "\\)")  # URL dagi maxsus belgilar
+    safe_name = html.escape(source_name)
+    # Gemini dan kelgan tekstda allaqachon HTML bor deb hisoblaymiz
+    safe_text = translated_text
+    safe_time = html.escape(published_at)
 
     message = (
-        f"{emoji} *{safe_name}*\n\n"
+        f"{emoji} <b>{safe_name}</b>\n\n"
         f"{safe_text}\n\n"
-        f"🔗 [Asl manba]({safe_url})\n"
-        f"🕐 {safe_time} \\| \\#cybersecurity \\#uzbekistan"
+        f"🕐 {safe_time} | #cybersecurity #uzbekistan"
     )
     return message
 
@@ -119,6 +99,7 @@ class TelegramPoster:
         translated_text: str,
         tweet_url: str,
         published_at: str,
+        image_url: str | None = None,
     ) -> bool:
         """
         Bitta postni Telegram kanalga yuboradi.
@@ -133,6 +114,8 @@ class TelegramPoster:
         Returns:
             True agar muvaffaqiyatli yuborilsa.
         """
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
         try:
             message = format_post(
                 emoji=emoji,
@@ -143,24 +126,46 @@ class TelegramPoster:
             )
 
             parts = split_long_message(message)
+            
+            # Button faqat oxirgi xabarga qo'shiladi
+            keyboard = [[InlineKeyboardButton("🔗 Asl manbaga o'tish", url=tweet_url)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
             for i, part in enumerate(parts):
+                is_last = (i == len(parts) - 1)
+                current_markup = reply_markup if is_last else None
+
                 try:
-                    await self.bot.send_message(
-                        chat_id=self.channel_id,
-                        text=part,
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                        disable_web_page_preview=True,
-                    )
+                    # Rasm bormi va bu birinchi qismmi?
+                    if image_url and i == 0 and len(part) <= 1024:
+                        await self.bot.send_photo(
+                            chat_id=self.channel_id,
+                            photo=image_url,
+                            caption=part,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=current_markup,
+                        )
+                    else:
+                        await self.bot.send_message(
+                            chat_id=self.channel_id,
+                            text=part,
+                            parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True,
+                            reply_markup=current_markup,
+                        )
                     logger.debug("Post qismi %d/%d yuborildi", i + 1, len(parts))
                 except TelegramError as e:
-                    # MarkdownV2 xatosi bo'lsa, oddiy matn sifatida yuborish
-                    logger.warning("MarkdownV2 xatosi, oddiy matn yuborilmoqda: %s", str(e))
-                    plain_text = re.sub(r"\\(.)", r"\1", part)
+                    # Rasm yuborishda xato bo'lsa yoki HTML xato ketsa, matn bilan yuboramiz
+                    logger.warning("HTML yoki rasm xatosi: %s", str(e))
+                    # Agar rasm xatosi bo'lgan bo'lsa, xabarning o'zini yuborib ko'ramiz
+                    # HTML parser xatosi bo'lishi ham mumkin, shuning uchun matnni escape qilamiz
+                    plain_text = html.escape(part)
                     await self.bot.send_message(
                         chat_id=self.channel_id,
                         text=plain_text,
+                        parse_mode=ParseMode.HTML,
                         disable_web_page_preview=True,
+                        reply_markup=current_markup,
                     )
 
             logger.info("Post yuborildi: %s — %s", source_name, tweet_url)

@@ -5,4 +5,4 @@ python-telegram-bot[job-queue]==21.3
 google-generativeai==0.7.2
 APScheduler==3.10.4
 python-dotenv==1.0.1
-twikit==2.3.1
+git+https://github.com/d60/twikit.git@main

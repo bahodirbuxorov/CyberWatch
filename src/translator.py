@@ -20,8 +20,10 @@ QOIDALAR:
 - Texnik atamalarni (CVE, RCE, XSS, SQLi va h.k.) tarjima qilma, asl holatida qoldir
 - Kompaniya nomlari, mahsulot nomlari o'zgarmaydi
 - Tarjima tabiiy va tushunarli bo'lsin
-- Faqat tarjimani ber, hech qanday izoh yoki qo'shimcha so'z yozma
-- Agar matn allaqachon O'zbekcha yoki Ruscha bo'lsa, O'zbekchaga o'gir"""
+- Matnni Telegram HTML formatida chiroyli qilib formatla (masalan, muhim joylarni <b>qalin</b> qilib belgilash).
+- Sarlavhalarni va asosiy g'oyalarni chiroyli ajratib ko'rsat. Emoji lardan ham mos ravishda foydalanish mumkin.
+- Faqat tarjimani ber, hech qanday qo'shimcha so'z yozma
+- Agar matn allaqachon O'zbekcha yoki Ruscha bo'lsa, O'zbekchaga o'gir va HTML formatla"""
 
 
 class Translator:
@@ -37,10 +39,10 @@ class Translator:
         """Gemini API ni sozlaydi."""
         genai.configure(api_key=self.api_key)
         self._model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-flash-latest",
             system_instruction=SYSTEM_PROMPT,
         )
-        logger.info("Gemini tarjima modeli sozlandi (gemini-1.5-flash)")
+        logger.info("Gemini tarjima modeli sozlandi (gemini-flash-latest)")
 
     async def translate(self, text: str) -> str:
         """

@@ -1,118 +1,235 @@
 """
 CyberWatch UZ Bot — Tweet Fetcher moduli.
 
-Twikit kutubxonasi orqali X (Twitter) dan tweetlarni oladi.
-Nitter endi ishlamaganligi sababli, twikit X ning ichki API si
-orqali ishlaydi (Twitter API key kerak emas, faqat X account).
+Ushbu modul 2 ta usuldan foydalanadi:
+1. Nitter RSS (nitter.net va boshqalar) - asosiy va tezkor usul.
+2. Twikit - X ning ichki API si (agar RSS ishlamasa va cookies mavjud bo'lsa).
 """
 
 import asyncio
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import mktime
 from pathlib import Path
 
+import aiohttp
+import feedparser
 from twikit import Client
 
 logger = logging.getLogger(__name__)
 
-# Cookies faylining joylashuvi
 COOKIES_PATH = os.getenv("COOKIES_PATH", "data/cookies.json")
+
+NITTER_INSTANCES = [
+    "https://nitter.net",
+    "https://nitter.cz",
+    "https://nitter.poast.org",
+]
 
 
 @dataclass
 class Tweet:
-    """Bitta tweet ma'lumotlari."""
     tweet_id: str
     username: str
     original_text: str
     tweet_url: str
     published_at: datetime
+    image_url: str | None = None
 
 
 class TweetFetcher:
-    """Twikit orqali X dan tweetlarni oluvchi klass."""
+    """Nitter RSS va Twikit orqali tweetlarni oluvchi gibrid klass."""
 
     def __init__(self) -> None:
-        self._client: Client | None = None
-        self._logged_in: bool = False
+        self._session: aiohttp.ClientSession | None = None
+        self._twikit_client: Client | None = None
+        self._twikit_logged_in: bool = False
 
     async def start(self) -> None:
-        """X ga ulanadi va login qiladi."""
-        self._client = Client("en-US")
+        """Sessiyalarni ochadi."""
+        # 1. aiohttp sessiyasi (RSS uchun)
+        timeout = aiohttp.ClientTimeout(total=30)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        self._session = aiohttp.ClientSession(timeout=timeout, headers=headers)
+        logger.info("Fetcher: HTTP sessiyasi ochildi (RSS uchun)")
 
+        # 2. Twikit client (Fallback uchun)
+        self._twikit_client = Client("en-US")
         cookies_file = Path(COOKIES_PATH)
 
-        # Oldingi sessiyadan cookies mavjud bo'lsa, yuklash
         if cookies_file.exists():
             try:
-                self._client.load_cookies(str(cookies_file))
-                self._logged_in = True
-                logger.info("Fetcher: cookies fayldan yuklandi (%s)", COOKIES_PATH)
-                return
+                self._twikit_client.load_cookies(str(cookies_file))
+                self._twikit_logged_in = True
+                logger.info("Fetcher: Twikit cookies yuklandi")
             except Exception as e:
-                logger.warning("Fetcher: cookies yuklanmadi, qayta login: %s", str(e))
+                logger.warning("Fetcher: Twikit cookies yuklanmadi: %s", str(e))
+        else:
+            logger.info("Fetcher: Twikit cookies yo'q, avval RSS sinab ko'riladi.")
 
-        # Yangi login qilish
-        username = os.getenv("X_USERNAME", "")
+    async def close(self) -> None:
+        """Resurslarni tozalaydi."""
+        if self._session:
+            await self._session.close()
+            self._session = None
+        self._twikit_client = None
+        self._twikit_logged_in = False
+        logger.info("Fetcher: resurslar yopildi")
+
+    # ==========================================
+    # RSS qismi
+    # ==========================================
+    async def _fetch_rss(self, username: str) -> list[Tweet] | None:
+        """RSS orqali tweetlarni olish. Xato bo'lsa None qaytaradi."""
+        print(f"DEBUG: Starting _fetch_rss for {username}")
+        for instance in NITTER_INSTANCES:
+            url = f"{instance}/{username}/rss"
+            print(f"DEBUG: Trying url {url}")
+            try:
+                if not self._session:
+                    print("DEBUG: self._session is None!")
+                    break
+                
+                print("DEBUG: making GET request")
+                async with self._session.get(url) as response:
+                    print(f"DEBUG: response status: {response.status}")
+                    logger.warning("Fetcher: %s HTTP Status: %s", url, response.status)
+                    if response.status == 200:
+                        text = await response.text()
+                        
+                        # XML validligini tekshirish
+                        if "<?xml" not in text[:50]:
+                            continue
+                            
+                        feed = feedparser.parse(text)
+                        
+                        if feed.bozo:
+                            # Agar bozo_exception jiddiy bo'lsa
+                            if "not well-formed" in str(feed.bozo_exception):
+                                continue
+
+                        tweets = []
+                        for entry in feed.entries:
+                            tweet = self._parse_rss_entry(entry, username)
+                            if tweet:
+                                tweets.append(tweet)
+                                
+                        logger.info("Fetcher: @%s dan %d ta tweet olindi (RSS: %s)", username, len(tweets), instance)
+                        return tweets
+            except BaseException as e:
+                print(f"DEBUG: Exception in _fetch_rss: {type(e).__name__} {e}")
+                logger.exception("Fetcher: %s RSS xatosi: %s", instance, type(e).__name__)
+                continue
+                
+        return None
+
+    def _parse_rss_entry(self, entry: feedparser.FeedParserDict, username: str) -> Tweet | None:
+        title = entry.get("title", "")
+        summary = entry.get("summary", "")
+        text = title if title else summary
+
+        # Rasmni izlash
+        image_url = None
+        img_match = re.search(r'<img[^>]+src="([^">]+)"', text)
+        if img_match:
+            src = img_match.group(1)
+            # nitter dagi `/pic/enc/...` yoki boshqa rasm linklarini tekshiramiz
+            if src.startswith("/"):
+                # "https://nitter.net/pic/..." qilib to'g'irlash
+                base_url = "/".join(entry.get("link", "").split("/")[:3]) # host gacha
+                image_url = base_url + src
+            else:
+                image_url = src
+
+        text = re.sub(r"<[^>]+>", "", text).strip()
+        if not text:
+            return None
+
+        if self._is_retweet_or_reply_text(text):
+            return None
+
+        tweet_id = entry.get("id", entry.get("link", ""))
+        tweet_url = entry.get("link", "")
+
+        published = entry.get("published_parsed")
+        if published:
+            published_at = datetime.fromtimestamp(mktime(published), tz=timezone.utc)
+        else:
+            published_at = datetime.now(timezone.utc)
+
+        return Tweet(
+            tweet_id=tweet_id,
+            username=username,
+            original_text=text,
+            tweet_url=tweet_url,
+            published_at=published_at,
+            image_url=image_url,
+        )
+
+    def _is_retweet_or_reply_text(self, text: str) -> bool:
+        stripped = text.strip()
+        if stripped.startswith("RT @") or stripped.startswith("@"):
+            return True
+        return False
+
+    # ==========================================
+    # Twikit qismi
+    # ==========================================
+    async def _fetch_twikit(self, username: str) -> list[Tweet]:
+        """Twikit orqali tweetlarni olish."""
+        if not self._twikit_client or not self._twikit_logged_in:
+            # RSS ham ishlamasa va cookies yo'q bo'lsa, login qilib ko'ramiz
+            success = await self._do_twikit_login()
+            if not success:
+                return []
+
+        try:
+            user = await self._twikit_client.get_user_by_screen_name(username)
+            if not user:
+                return []
+
+            raw_tweets = await self._twikit_client.get_user_tweets(user.id, tweet_type="Tweets", count=10)
+            tweets = []
+            for raw_tweet in raw_tweets:
+                tweet = self._parse_twikit_tweet(raw_tweet, username)
+                if tweet:
+                    tweets.append(tweet)
+                    
+            logger.info("Fetcher: @%s dan %d ta tweet olindi (Twikit)", username, len(tweets))
+            return tweets
+        except Exception as e:
+            logger.warning("Fetcher: Twikit orqali olish xatosi: %s", str(e))
+            return []
+
+    async def _do_twikit_login(self) -> bool:
+        """Twikit login qiladi (KEY_BYTE xatolari sababli faqat fallback sifatida)."""
+        username = os.getenv("X_USERNAME", "").lstrip("@")
         email = os.getenv("X_EMAIL", "")
         password = os.getenv("X_PASSWORD", "")
 
         if not all([username, email, password]):
-            logger.error(
-                "Fetcher: X_USERNAME, X_EMAIL va X_PASSWORD .env da bo'lishi kerak!"
-            )
-            return
+            return False
 
         try:
-            await self._client.login(
-                auth_info_1=username,
-                auth_info_2=email,
-                password=password,
-            )
-            # Cookies ni saqlash (keyingi ishga tushirishlar uchun)
-            cookies_dir = cookies_file.parent
-            cookies_dir.mkdir(parents=True, exist_ok=True)
-            self._client.save_cookies(str(cookies_file))
-            self._logged_in = True
-            logger.info("Fetcher: X ga muvaffaqiyatli login qilindi va cookies saqlandi")
+            logger.info("Fetcher: Twikit orqali X ga login qilinmoqda...")
+            if self._twikit_client:
+                await self._twikit_client.login(auth_info_1=username, auth_info_2=email, password=password)
+                
+                cookies_file = Path(COOKIES_PATH)
+                cookies_file.parent.mkdir(parents=True, exist_ok=True)
+                self._twikit_client.save_cookies(str(cookies_file))
+                self._twikit_logged_in = True
+                logger.info("Fetcher: Twikit login muvaffaqiyatli")
+                return True
         except Exception as e:
-            logger.error("Fetcher: X ga login xatosi: %s", str(e))
-            self._logged_in = False
-
-    async def close(self) -> None:
-        """Resurslarni tozalaydi."""
-        self._client = None
-        self._logged_in = False
-        logger.info("Fetcher: yopildi")
-
-    def _is_retweet_or_reply(self, tweet_obj: object) -> bool:
-        """Retweet yoki Reply ekanligini tekshiradi."""
-        text = getattr(tweet_obj, "text", "") or ""
-        # Retweet
-        if text.strip().startswith("RT @"):
-            return True
-        # Reply (in_reply_to mavjud bo'lsa)
-        if getattr(tweet_obj, "in_reply_to_tweet_id", None):
-            return True
-        # @ bilan boshlanuvchi reply
-        if text.strip().startswith("@"):
-            return True
+            logger.warning("Fetcher: Twikit login muvaffaqiyatsiz (hozirda Twikit da KEY_BYTE muammosi mavjud bo'lishi mumkin): %s", str(e))
+        
         return False
 
-    def _parse_tweet(self, tweet_obj: object, username: str) -> Tweet | None:
-        """
-        Twikit tweet obyektini bizning Tweet dataclass ga o'giradi.
-
-        Args:
-            tweet_obj: Twikit dan kelgan tweet.
-            username: Manba kanal username.
-
-        Returns:
-            Tweet obyekti yoki None (filter qilinsa).
-        """
-        # Matnni olish
+    def _parse_twikit_tweet(self, tweet_obj: object, username: str) -> Tweet | None:
         text = getattr(tweet_obj, "text", "") or ""
         full_text = getattr(tweet_obj, "full_text", "") or ""
         content = full_text if full_text else text
@@ -120,29 +237,24 @@ class TweetFetcher:
         if not content.strip():
             return None
 
-        # RT va Reply filtrlash
-        if self._is_retweet_or_reply(tweet_obj):
-            logger.debug("Fetcher: RT/Reply filtrlandi — %s...", content[:50])
+        # RT/Reply check
+        if getattr(tweet_obj, "in_reply_to_tweet_id", None) or self._is_retweet_or_reply_text(content):
             return None
 
-        # Tweet ID
+        image_url = None
+        media = getattr(tweet_obj, "media", [])
+        if media and isinstance(media, list) and len(media) > 0:
+            image_url = getattr(media[0], "media_url_https", None)
+
         tweet_id = str(getattr(tweet_obj, "id", ""))
-
-        # Tweet URL
         tweet_url = f"https://x.com/{username}/status/{tweet_id}"
-
-        # Vaqt
+        
         created_at = getattr(tweet_obj, "created_at", None)
-        if created_at and isinstance(created_at, str):
+        if isinstance(created_at, str):
             try:
-                # Twikit format: "Wed Oct 10 20:19:24 +0000 2018"
-                published_at = datetime.strptime(
-                    created_at, "%a %b %d %H:%M:%S %z %Y"
-                )
+                published_at = datetime.strptime(created_at, "%a %b %d %H:%M:%S %z %Y")
             except ValueError:
                 published_at = datetime.now(timezone.utc)
-        elif isinstance(created_at, datetime):
-            published_at = created_at
         else:
             published_at = datetime.now(timezone.utc)
 
@@ -152,68 +264,25 @@ class TweetFetcher:
             original_text=content,
             tweet_url=tweet_url,
             published_at=published_at,
+            image_url=image_url,
         )
 
+    # ==========================================
+    # Asosiy funksiya
+    # ==========================================
     async def fetch_tweets(self, username: str) -> list[Tweet]:
         """
-        Berilgan username uchun tweetlarni oladi.
-
-        Args:
-            username: X username (@ siz).
-
-        Returns:
-            Tweetlar ro'yxati.
+        Kanal tweetlarini olish uchun gibrid mantiq:
+        1-o'rinda Nitter RSS (eng stabil).
+        2-o'rinda Twikit (agar RSS larning hammasi o'lgan bo'lsa).
         """
-        if not self._client or not self._logged_in:
-            logger.error("Fetcher: X ga ulanilmagan. start() ni chaqiring.")
-            return []
-
-        try:
-            # Foydalanuvchini topish
-            user = await self._client.get_user_by_screen_name(username)
-            if not user:
-                logger.warning("Fetcher: @%s foydalanuvchisi topilmadi", username)
-                return []
-
-            logger.debug("Fetcher: @%s foydalanuvchisi topildi (id=%s)", username, user.id)
-
-            # Tweetlarni olish
-            raw_tweets = await self._client.get_user_tweets(
-                user.id,
-                tweet_type="Tweets",
-                count=20,
-            )
-
-            tweets: list[Tweet] = []
-            for raw_tweet in raw_tweets:
-                tweet = self._parse_tweet(raw_tweet, username)
-                if tweet:
-                    tweets.append(tweet)
-
-            logger.info(
-                "Fetcher: @%s dan %d ta tweet olindi",
-                username, len(tweets),
-            )
+        # 1. RSS
+        tweets = await self._fetch_rss(username)
+        if tweets is not None:
             return tweets
-
-        except Exception as e:
-            logger.error("Fetcher: @%s dan tweet olishda xato: %s", username, str(e))
-
-            # Agar authentication xatosi bo'lsa, qayta login qilishga urinish
-            error_str = str(e).lower()
-            if "unauthorized" in error_str or "403" in error_str or "auth" in error_str:
-                logger.info("Fetcher: Auth xatosi — qayta login qilinmoqda...")
-                await self._relogin()
-
-            return []
-
-    async def _relogin(self) -> None:
-        """Cookies o'chirib qayta login qiladi."""
-        cookies_file = Path(COOKIES_PATH)
-        if cookies_file.exists():
-            cookies_file.unlink()
-            logger.info("Fetcher: eski cookies o'chirildi")
-
-        # Biroz kutish (rate limit uchun)
-        await asyncio.sleep(5)
-        await self.start()
+            
+        # 2. Twikit Fallback
+        logger.warning("Fetcher: Barcha RSS instance'lar band yoki ishlamayapti. Twikit fallback ishga tushirildi...")
+        tweets = await self._fetch_twikit(username)
+        
+        return tweets

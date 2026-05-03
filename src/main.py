@@ -117,6 +117,7 @@ async def process_channel(
             translated_text=translated,
             tweet_url=tweet.tweet_url,
             published_at=published_str,
+            image_url=tweet.image_url,
         )
 
         if success:
