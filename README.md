@@ -6,12 +6,12 @@ X (Twitter) dagi kiberxavfsizlik kanallarini kuzatib, yangi postlarni avtomatik 
 
 ## 📋 Imkoniyatlar
 
-- **4 ta X kanalni** real vaqtda kuzatish (Nitter RSS orqali)
+- **4 ta X kanalni** real vaqtda kuzatish (twikit orqali)
 - **Google Gemini AI** yordamida professional tarjima
 - **Ikki darajali deduplication** — bir xil postni takrorlamaslik
 - **Keyword filter** — DeepTechTR dan faqat kiberxavfsizlik mavzularini o'tkazish
 - **Docker** bilan qulay deploy
-- **Self-hosted Nitter** — Twitter API kerak emas
+- **Twitter API kerak emas** — twikit X ning ichki API si orqali ishlaydi
 
 ## 📡 Kuzatiladigan kanallar
 
@@ -52,6 +52,17 @@ cd cyberwatch-uz-bot
 2. **"Create API Key"** tugmasini bosing
 3. API kalitni nusxalang
 
+#### X (Twitter) Account
+Bot X dan ma'lumot olish uchun bitta X account kerak (Twitter API emas!). 
+**Twikit** kutubxonasi X ning ichki web API si orqali ishlaydi.
+
+1. X da yangi yoki kam ishlatilgan account yarating
+2. Account ga email va parol o'rnating
+3. `.env` faylga username, email va parolni yozing
+
+> ⚠️ **Muhim:** Asosiy shaxsiy accountingizni ishlatmang! 
+> Alohida bot account yarating. Account bloklash xavfi bor.
+
 ### 3-qadam: Konfiguratsiya
 
 ```bash
@@ -64,9 +75,16 @@ cp .env.example .env
 TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
 TELEGRAM_CHANNEL_ID=@cyberwatch_uz
 GEMINI_API_KEY=AIzaSy...your_key_here
+
+# X account (yangi/alohida account tavsiya etiladi)
+X_USERNAME=your_x_username
+X_EMAIL=your_x_email@example.com
+X_PASSWORD=your_x_password
+
 POLL_INTERVAL_MINUTES=15
 MAX_POSTS_PER_CYCLE=5
 DB_PATH=/app/data/bot.db
+COOKIES_PATH=/app/data/cookies.json
 LOG_LEVEL=INFO
 LOG_FILE=/app/logs/bot.log
 ```
@@ -131,13 +149,13 @@ cyberwatch-uz-bot/
 │   ├── __init__.py          # Package init
 │   ├── main.py              # Entry point, scheduler
 │   ├── config.py            # Barcha sozlamalar
-│   ├── fetcher.py           # Nitter RSS dan tweet olish
+│   ├── fetcher.py           # Twikit orqali tweet olish
 │   ├── translator.py        # Gemini orqali tarjima
 │   ├── telegram_poster.py   # Telegram kanalga post qilish
 │   ├── deduplicator.py      # SQLite dedup logic
 │   └── filter.py            # DeepTechTR uchun keyword filter
 ├── data/
-│   └── .gitkeep             # SQLite DB shu yerda saqlanadi
+│   └── .gitkeep             # SQLite DB va cookies shu yerda
 ├── logs/
 │   └── .gitkeep
 ├── Dockerfile
@@ -149,22 +167,21 @@ cyberwatch-uz-bot/
 
 ---
 
-## ⚙️ Nitter haqida
+## ⚙️ Twikit haqida
 
-[Nitter](https://github.com/zedeus/nitter) — bu X (Twitter) ning ochiq kodli frontend alternative. Bot Nitter RSS orqali tweetlarni oladi, shuning uchun **Twitter API kerak emas**.
+[Twikit](https://github.com/d60/twikit) — bu X (Twitter) ning ichki web API si orqali 
+ishlaydigan Python kutubxonasi. Rasmiy Twitter API kerak emas.
 
-### Nitter ishlash tartibi:
-1. Docker Compose da `nitter` servisi avtomatik ishga tushadi
-2. Bot birinchi navbatda self-hosted Nitter ga murojaat qiladi
-3. Agar self-hosted ishlamasa, public instance'larga o'tadi (fallback)
+### Qanday ishlaydi:
+1. Bot birinchi marta ishga tushganda X ga login qiladi
+2. Cookies faylga saqlanadi (`data/cookies.json`)
+3. Keyingi ishga tushirishlarda cookies dan foydalanadi (qayta login kerak emas)
+4. Agar cookies muddati tugasa, avtomatik qayta login qiladi
 
-### Public Nitter instance'lar:
-- `https://nitter.privacydev.net`
-- `https://nitter.poast.org`
-- `https://nitter.1d4.us`
-- `https://nitter.adminforge.de`
-
-> ⚠️ **Eslatma:** Public Nitter instance'lar vaqti-vaqti bilan ishlamay qolishi mumkin. Self-hosted Nitter tavsiya etiladi.
+### Muhim eslatmalar:
+- **Alohida X account** yarating — asosiy accountingizni ishlatmang
+- Bot X ning rate limit laridan himoyalangan (kanallar orasida 5s kutish)
+- Agar account bloklansa, yangi account bilan `.env` ni yangilang
 
 ---
 
@@ -176,17 +193,20 @@ cyberwatch-uz-bot/
 - `.env` faylida barcha kalitlar to'g'ri yozilganini tekshiring
 - `.env` faylida bo'sh joylar yoki tirnoq belgilari yo'qligiga ishonch hosil qiling
 
+### X ga login qilib bo'lmayapti
+
+- X_USERNAME, X_EMAIL va X_PASSWORD to'g'ri ekanligini tekshiring
+- X account ga 2FA (ikki faktorli autentifikatsiya) O'CHIRILGAN bo'lishi kerak
+- Agar "Could not authenticate" xatosi bo'lsa:
+  1. `data/cookies.json` faylini o'chiring
+  2. Bot ni qayta ishga tushiring
+- Account bloklanmagan bo'lishi kerak — X da tekshiring
+
 ### Telegram ga xabar yuborilmayapti
 
 - Bot kanalga **admin** sifatida qo'shilganini tekshiring
 - Channel ID to'g'ri formatda ekanligini tekshiring (`@channel_name` yoki `-100...`)
 - BotFather dan bot **aktiv** ekanligini tasdiqlang
-
-### Nitter dan ma'lumot kelmayapti
-
-- `docker-compose logs nitter` bilan Nitter holatini tekshiring
-- Public instance'lar vaqtincha ishlamay qolgan bo'lishi mumkin
-- Nitter konteynerini qayta ishga tushiring: `docker-compose restart nitter`
 
 ### Tarjima ishlamayapti
 
@@ -219,8 +239,7 @@ grep "ERROR" logs/bot.log
 | Texnologiya | Maqsad |
 |-------------|--------|
 | Python 3.11 | Asosiy til |
-| Nitter RSS | X dan ma'lumot olish |
-| feedparser | RSS parse |
+| twikit | X dan ma'lumot olish (ichki API) |
 | Google Gemini 1.5 Flash | AI tarjima |
 | python-telegram-bot v21+ | Telegram API |
 | aiosqlite | Deduplication DB |

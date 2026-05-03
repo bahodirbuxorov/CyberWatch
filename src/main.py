@@ -16,7 +16,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from src.config import Config, SourceChannel, config, setup_logging
 from src.deduplicator import Deduplicator
-from src.fetcher import RSSFetcher
+from src.fetcher import TweetFetcher
 from src.filter import is_cyber_related
 from src.telegram_poster import TelegramPoster
 from src.translator import Translator
@@ -29,7 +29,7 @@ shutdown_event = asyncio.Event()
 
 async def process_channel(
     channel_cfg: SourceChannel,
-    fetcher: RSSFetcher,
+    fetcher: TweetFetcher,
     dedup: Deduplicator,
     translator: Translator,
     poster: TelegramPoster,
@@ -41,7 +41,7 @@ async def process_channel(
 
     Args:
         channel_cfg: Kanal konfiguratsiyasi.
-        fetcher: RSS fetcher.
+        fetcher: Tweet fetcher.
         dedup: Deduplicator.
         translator: Tarjimon.
         poster: Telegram poster.
@@ -145,7 +145,7 @@ async def process_channel(
 
 async def poll_all_channels(
     cfg: Config,
-    fetcher: RSSFetcher,
+    fetcher: TweetFetcher,
     dedup: Deduplicator,
     translator: Translator,
     poster: TelegramPoster,
@@ -168,6 +168,10 @@ async def poll_all_channels(
             post_interval=cfg.post_interval_seconds,
         )
         total_posted += count
+
+        # Kanallar orasida 5 soniya kutish (rate limit uchun)
+        if not shutdown_event.is_set():
+            await asyncio.sleep(5)
 
     logger.info("═══ Poll sikli tugadi: jami %d ta post yuborildi ═══", total_posted)
 
@@ -210,7 +214,7 @@ async def main() -> None:
     dedup = Deduplicator(config.db_path)
     await dedup.init_db()
 
-    fetcher = RSSFetcher(config)
+    fetcher = TweetFetcher()
     await fetcher.start()
 
     translator = Translator(config.gemini_api_key)

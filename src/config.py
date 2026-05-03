@@ -17,13 +17,6 @@ load_dotenv()
 
 
 @dataclass
-class NitterInstance:
-    """Bitta Nitter instance ma'lumotlari."""
-    url: str
-    priority: int = 0
-
-
-@dataclass
 class SourceChannel:
     """Kuzatiladigan X (Twitter) kanali."""
     username: str
@@ -43,6 +36,11 @@ class Config:
     # — Gemini AI —
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
 
+    # — X (Twitter) account credentials —
+    x_username: str = os.getenv("X_USERNAME", "")
+    x_email: str = os.getenv("X_EMAIL", "")
+    x_password: str = os.getenv("X_PASSWORD", "")
+
     # — Scheduler —
     poll_interval_minutes: int = int(os.getenv("POLL_INTERVAL_MINUTES", "15"))
     max_posts_per_cycle: int = int(os.getenv("MAX_POSTS_PER_CYCLE", "5"))
@@ -51,25 +49,12 @@ class Config:
     # — Database —
     db_path: str = os.getenv("DB_PATH", "data/bot.db")
 
+    # — Cookies —
+    cookies_path: str = os.getenv("COOKIES_PATH", "data/cookies.json")
+
     # — Logging —
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     log_file: str = os.getenv("LOG_FILE", "logs/bot.log")
-
-    # — Nitter instances (fallback chain) —
-    nitter_instances: list[NitterInstance] = field(default_factory=lambda: [
-        NitterInstance(url="https://nitter.privacydev.net", priority=1),
-        NitterInstance(url="https://nitter.poast.org", priority=2),
-        NitterInstance(url="https://nitter.1d4.us", priority=3),
-        NitterInstance(url="https://nitter.adminforge.de", priority=4),
-    ])
-
-    def __post_init__(self) -> None:
-        """Self-hosted Nitter instance ni qo'shadi (agar mavjud bo'lsa)."""
-        self_hosted = os.getenv("NITTER_SELF_HOSTED_URL", "")
-        if self_hosted:
-            self.nitter_instances.insert(
-                0, NitterInstance(url=self_hosted.rstrip("/"), priority=0)
-            )
 
     # — Kuzatiladigan kanallar —
     source_channels: list[SourceChannel] = field(default_factory=lambda: [
@@ -108,6 +93,8 @@ class Config:
             errors.append("TELEGRAM_CHANNEL_ID bo'sh yoki mavjud emas")
         if not self.gemini_api_key:
             errors.append("GEMINI_API_KEY bo'sh yoki mavjud emas")
+        if not self.x_username or not self.x_password:
+            errors.append("X_USERNAME va X_PASSWORD bo'sh yoki mavjud emas")
         if errors:
             raise ValueError(
                 "Konfiguratsiya xatolari:\n" + "\n".join(f"  - {e}" for e in errors)
