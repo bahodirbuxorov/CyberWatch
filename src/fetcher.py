@@ -7,6 +7,7 @@ Ushbu modul 2 ta usuldan foydalanadi:
 """
 
 import asyncio
+from urllib.parse import unquote
 import logging
 import os
 import re
@@ -38,6 +39,7 @@ class Tweet:
     tweet_url: str
     published_at: datetime
     image_url: str | None = None
+    media_type: str = "photo"
 
 
 class TweetFetcher:
@@ -84,30 +86,23 @@ class TweetFetcher:
     # ==========================================
     async def _fetch_rss(self, username: str) -> list[Tweet] | None:
         """RSS orqali tweetlarni olish. Xato bo'lsa None qaytaradi."""
-        print(f"DEBUG: Starting _fetch_rss for {username}")
         for instance in NITTER_INSTANCES:
             url = f"{instance}/{username}/rss"
-            print(f"DEBUG: Trying url {url}")
             try:
                 if not self._session:
-                    print("DEBUG: self._session is None!")
                     break
-                
-                print("DEBUG: making GET request")
+
                 async with self._session.get(url) as response:
-                    print(f"DEBUG: response status: {response.status}")
-                    logger.warning("Fetcher: %s HTTP Status: %s", url, response.status)
+                    logger.info("Fetcher: %s HTTP Status: %s", url, response.status)
                     if response.status == 200:
                         text = await response.text()
-                        
-                        # XML validligini tekshirish
+
                         if "<?xml" not in text[:50]:
                             continue
-                            
+
                         feed = feedparser.parse(text)
-                        
+
                         if feed.bozo:
-                            # Agar bozo_exception jiddiy bo'lsa
                             if "not well-formed" in str(feed.bozo_exception):
                                 continue
 
@@ -116,14 +111,13 @@ class TweetFetcher:
                             tweet = self._parse_rss_entry(entry, username)
                             if tweet:
                                 tweets.append(tweet)
-                                
+
                         logger.info("Fetcher: @%s dan %d ta tweet olindi (RSS: %s)", username, len(tweets), instance)
                         return tweets
             except BaseException as e:
-                print(f"DEBUG: Exception in _fetch_rss: {type(e).__name__} {e}")
-                logger.exception("Fetcher: %s RSS xatosi: %s", instance, type(e).__name__)
+                logger.warning("Fetcher: %s RSS xatosi: %s", instance, type(e).__name__)
                 continue
-                
+
         return None
 
     def _parse_rss_entry(self, entry: feedparser.FeedParserDict, username: str) -> Tweet | None:
@@ -131,20 +125,76 @@ class TweetFetcher:
         summary = entry.get("summary", "")
         text = title if title else summary
 
-        # Rasmni izlash
+        # Rasmni izlash — ham title ham summary dan barcha img taglarni topamiz
         image_url = None
-        img_match = re.search(r'<img[^>]+src="([^">]+)"', text)
-        if img_match:
-            src = img_match.group(1)
-            # nitter dagi `/pic/enc/...` yoki boshqa rasm linklarini tekshiramiz
-            if src.startswith("/"):
-                # "https://nitter.net/pic/..." qilib to'g'irlash
-                base_url = "/".join(entry.get("link", "").split("/")[:3]) # host gacha
-                image_url = base_url + src
-            else:
-                image_url = src
+        media_type = "photo"
+        search_text = (title if title else "") + summary
 
-        text = re.sub(r"<[^>]+>", "", text).strip()
+        # Avval videolarni qidiramiz
+        video_tags = re.findall(r'<video[^>]+[^>]+>', search_text) + re.findall(r'<source[^>]+src=["\']([^"\']+)["\']', search_text)
+        for src in video_tags:
+            src_url = src if isinstance(src, str) and not src.startswith("<") else ""
+            if not src_url:
+                src_match = re.search(r'data-url=["\']([^"\']+)["\']|src=["\']([^"\']+)["\']', src)
+                if src_match:
+                    src_url = src_match.group(1) or src_match.group(2)
+            
+            if src_url and "/pic/" in src_url:
+                pic_part = re.search(r'/pic/(.+)', src_url)
+                if pic_part:
+                    decoded = unquote(pic_part.group(1))
+                    if ".mp4" in decoded:
+                        image_url = f"https://{decoded}"
+                        media_type = "video"
+                        break
+
+        # Agar video topilmasa, rasmlarni qidiramiz
+        if not image_url:
+            img_tags = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', search_text)
+
+            for src in img_tags:
+                # Relative URL larni to'g'irlash
+                if src.startswith("/"):
+                    base_url = "/".join(entry.get("link", "").split("/")[:3])
+                    src = base_url + src
+
+                # Nitter /pic/ proxy URL larini haqiqiy pbs.twimg.com URL ga aylantirish
+                if "/pic/" in src:
+                    pic_part = re.search(r'/pic/(.+)', src)
+                    if not pic_part:
+                        continue
+                    decoded = unquote(pic_part.group(1))
+
+                    if decoded.startswith("media/"):
+                        # Rasm URL: pbs.twimg.com/media/...jpg
+                        # Ba'zan `?format=jpg&name=...` qo'shish kerak
+                        if "?" not in decoded:
+                            decoded = decoded + "?format=jpg&name=large"
+                        image_url = f"https://pbs.twimg.com/{decoded}"
+                        break  # Birinchi rasmni olib chiqamiz
+
+                    elif decoded.startswith("tweet_video_thumb/"):
+                        # Video thumbnail: pbs.twimg.com/tweet_video_thumb/...
+                        image_url = f"https://pbs.twimg.com/{decoded}"
+                        break
+
+                    elif decoded.startswith("card_img/"):
+                        # Card rasmlari - faqat format=jpg versiyasini olamiz (& muammosiz)
+                        # card_img/ID/HASH?format=jpg&name=800x419 -> format=jpg&name=medium ishlatamiz
+                        base_card = decoded.split("?")[0]  # Parametrlarsiz ID/HASH qismi
+                        image_url = f"https://pbs.twimg.com/{base_card}?format=jpg&name=medium"
+                        # card_img dan ko'ra to'g'ridan-to'g'ri rasm bo'lsa, uni afzal ko'ramiz
+                        # shuning uchun break qilmaymiz, davom qilamiz
+                        continue
+
+                elif src.startswith("http") and any(ext in src for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"]):
+                    # To'g'ridan-to'g'ri rasm URL
+                    image_url = src
+                    if ".gif" in src:
+                        media_type = "animation"
+                    break
+
+        text = re.sub(r"<[^>]+>", "", title if title else summary).strip()
         if not text:
             return None
 
@@ -167,6 +217,7 @@ class TweetFetcher:
             tweet_url=tweet_url,
             published_at=published_at,
             image_url=image_url,
+            media_type=media_type,
         )
 
     def _is_retweet_or_reply_text(self, text: str) -> bool:
@@ -242,9 +293,28 @@ class TweetFetcher:
             return None
 
         image_url = None
+        media_type = "photo"
         media = getattr(tweet_obj, "media", [])
         if media and isinstance(media, list) and len(media) > 0:
-            image_url = getattr(media[0], "media_url_https", None)
+            media_item = media[0]
+            m_type = getattr(media_item, "type", "")
+            if m_type == "video":
+                media_type = "video"
+                variants = getattr(media_item, "video_info", {}).get("variants", [])
+                if variants:
+                    # Get highest bitrate mp4
+                    mp4s = [v for v in variants if v.get("content_type") == "video/mp4"]
+                    if mp4s:
+                        mp4s.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
+                        image_url = mp4s[0].get("url")
+            elif m_type == "animated_gif":
+                media_type = "animation"
+                variants = getattr(media_item, "video_info", {}).get("variants", [])
+                if variants:
+                    image_url = variants[0].get("url")
+            
+            if not image_url:
+                image_url = getattr(media_item, "media_url_https", None)
 
         tweet_id = str(getattr(tweet_obj, "id", ""))
         tweet_url = f"https://x.com/{username}/status/{tweet_id}"
@@ -265,6 +335,7 @@ class TweetFetcher:
             tweet_url=tweet_url,
             published_at=published_at,
             image_url=image_url,
+            media_type=media_type,
         )
 
     # ==========================================

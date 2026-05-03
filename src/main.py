@@ -118,6 +118,7 @@ async def process_channel(
             tweet_url=tweet.tweet_url,
             published_at=published_str,
             image_url=tweet.image_url,
+            media_type=tweet.media_type,
         )
 
         if success:
